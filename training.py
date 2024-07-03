@@ -8,6 +8,7 @@ Created on Fri Jun 28 11:35:33 2024
 import PINNs
 import torch
 import numpy as np
+from torch.utils.data import DataLoader, TensorDataset
 
 N_train = 2000
 nbTrainingSteps = 2
@@ -23,9 +24,9 @@ L = 1
 h = 0.2
 
 #%%Préparation des données
-t_star = np.linspace(0, 10, 1000)
-X_star = np.linspace(0,1, 1000)
-Y_star = np.linspace(0,0.2, 200)
+t_star = np.linspace(0, 10, 100)
+X_star = np.linspace(0,1, 100)
+Y_star = np.linspace(0,0.2, 20)
 
 X = []
 Y = []
@@ -51,27 +52,22 @@ y = YY.flatten()[:, None]  # NT x 1
 t = TT.flatten()[:, None]  # NT x 1
 
 print(x.shape, y.shape, t.shape)
+x = torch.tensor(x, dtype=torch.float32, requires_grad=True)
+y = torch.tensor(y, dtype=torch.float32, requires_grad=True)
+t = torch.tensor(t, dtype=torch.float32, requires_grad=True)
+
+dataset = TensorDataset(x, y, t)
+dataloader = DataLoader(dataset, batch_size=5000, shuffle=True)
 
 
 #%% Entrainement
-idx = np.random.choice(N * T, N_train, replace=False)
-x_train = x[idx, :]
-y_train = y[idx, :]
-t_train = t[idx, :]
-pinn = PINNs.NavierStokes(x_train, y_train, t_train)
-pinn.train(1000,5)
-torch.save(pinn.net.state_dict(), 'model0.pt')
+def trainPINN(dataloader, nbTrainingSteps_adam = 10, nbTrainingSteps_lbfgs = 30) :
+    pinn = PINNs.NavierStokes(dataloader)
+    pinn.train(nbTrainingSteps_adam, nbTrainingSteps_lbfgs)
+    torch.save(pinn.net.state_dict(), 'model' + str(pinn.iter) + '.pt')
 
-for i in range(nbTrainingSteps) :
-    idx = np.random.choice(N * T, N_train, replace=False)
-    x_train = x[idx, :]
-    y_train = y[idx, :]
-    t_train = t[idx, :]
-    pinn = PINNs.NavierStokes(x_train, y_train, t_train)
-    pinn.net.load_state_dict(torch.load('model' + str(i) +'.pt'))
-    pinn.train(1000,5)
-    torch.save(pinn.net.state_dict(), 'model' + str(i+1) + '.pt')
 
+trainPINN(dataloader)
 
 
 

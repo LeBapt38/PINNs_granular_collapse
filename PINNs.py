@@ -9,7 +9,7 @@ Created on Wed Jun 26 18:01:32 2024
 import torch
 import torch.nn as nn
 import numpy as np
-from math import exp
+from math import exp, isnan
 
 nu = 0.01
 rho = 2500
@@ -33,35 +33,31 @@ def ci(x,y) :
     if y < 0.105 and y > 0.095 :
         y0 = y - 0.095
         phi = exp(0.01005**2 / (y0**2 - 0.01005**2)) / exp(-1)
-    return phi
+    return 0.6 * phi
 
 ## Definis la classe pour le PINN
 class NavierStokes():
-    def __init__(self, X, Y, T):
+    def __init__(self, dataloader):
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.x = torch.tensor(X, dtype=torch.float32, requires_grad=True)
-        self.y = torch.tensor(Y, dtype=torch.float32, requires_grad=True)
-        self.t = torch.tensor(T, dtype=torch.float32, requires_grad=True)
-        self.x = self.x.to(self.device)
-        self.y = self.y.to(self.device)
-        self.t = self.t.to(self.device)
+        self.dataloader = dataloader
+        self.sizeBatch = dataloader.batch_size
 
         #null vector to test against f and g:
-        self.null = torch.zeros((self.x.shape[0], 1)).to(self.device)
+        self.null = torch.zeros((self.sizeBatch, 1)).to(self.device)
         # initialize network:
         self.network()
         self.net = self.net.to(self.device)
 
         self.LBFGS_optimizer = torch.optim.LBFGS(self.net.parameters(), 
-                                                 lr=0.5, 
-                                                 max_iter=100, max_eval=None, 
+                                                 lr=0.001, 
+                                                 max_iter=1000, max_eval=None, 
                                                  history_size=50, 
-                                                 tolerance_grad=1e-06, 
-                                                 tolerance_change=1 * np.finfo(float).eps,
+                                                 tolerance_grad=1e-08, 
+                                                 tolerance_change=0.01 * np.finfo(float).eps,
                                                  line_search_fn="strong_wolfe")
         
-        self.adam_optimizer = torch.optim.Adam(self.net.parameters(), lr=0.01)
+        self.adam_optimizer = torch.optim.Adam(self.net.parameters(), lr=0.003)
         self.mse = nn.MSELoss()
 
         #loss
@@ -90,6 +86,13 @@ class NavierStokes():
         #Get the results of the NN
         res = self.net(torch.hstack((x, y, t)))
         psi, p, phi = res[:, 0:1], res[:, 1:2], res[:, 2:3]
+        p *= 1e5
+        if isnan(psi[0].item()) :
+            print('psi')
+        elif isnan(p[0].item()) :
+            print('p')
+        elif isnan(phi[0].item()) :
+            print('phi')
         
         #Modify and get related results
         u = torch.autograd.grad(psi, y, grad_outputs=torch.ones_like(psi), create_graph=True)[0] #retain_graph=True,
@@ -135,47 +138,48 @@ class NavierStokes():
 
         return u, v, p, phi, f, g, h
     
-    def loss_function(self) :
+    def loss_function(self, x, y, t) :
         # u, v, p, g and f predictions:
-        u_prediction, v_prediction, p_prediction, phi_prediction, f_prediction, g_prediction, h_prediction = self.function(self.x, self.y, self.t)
+        u_prediction, v_prediction, p_prediction, phi_prediction, f_prediction, g_prediction, h_prediction = self.function(x, y, t)
 
         # calculate losses
         u_loss = 0
         v_loss = 0
         phi_loss = 0
         p_loss = 0
-        for i in range(self.x.shape[0]) :
-            n = 0
-            if self.x[i,0] == 0. or self.x[i,0] == L or self.y[i,0] == 0. or self.y[i,0] == h :
+        n, k = 0, 0
+        for i in range(self.sizeBatch) :
+            if x[i,0] == 0. or x[i,0] == L or y[i,0] == 0. or y[i,0] == h :
                 u_loss += u_prediction[i,0]**2
                 v_loss += v_prediction[i,0]**2
                 n += 1
-            u_loss /= (n+1)
-            k = 0
-            if self.t[i,0] == 0 :
+            if t[i,0] == 0 :
                 k += 1
-                phi_loss += (phi_prediction[i,0] - ci(self.x[i, 0], self.y[i,0]))**2
-            phi_loss /= (k+1)
-            if self.x[i,0] > 0.75 and self.y[i,0] > 0.15 : 
+                phi_loss += (phi_prediction[i,0] - ci(x[i, 0], y[i,0]))**2
+            if y[i,0] > 0.15 : 
                 p_loss = (p_prediction[-1] - p0)**2
+        u_loss /= (n+1)
+        phi_loss /= (k+1)
         f_loss = self.mse(f_prediction, self.null)
         g_loss = self.mse(g_prediction, self.null)
         h_loss = self.mse(h_prediction, self.null)
-        self.ls = u_loss + v_loss + p_loss + phi_loss + f_loss +g_loss + h_loss
-
+        self.ls = u_loss + v_loss + 10 * p_loss + 100 * phi_loss + 0.001 * f_loss + 0.001 * g_loss + 0.001 * h_loss
         # derivative with respect to net s weights:
         self.ls.backward()
         
     def closure(self):
         # reset gradients to zero:
         self.LBFGS_optimizer.zero_grad()
-
-        self.loss_function()
-
+        x, y, t = next(iter(self.dataloader))
+        x = x.to(self.device)
+        y = y.to(self.device)
+        t = t.to(self.device)
+        self.loss_function(x, y, t)
+        
         self.iter += 1
-        if not self.iter % 1:
-            print('Iteration: {:}, Loss: {:0.6f}'.format(self.iter, self.ls.item()))
-
+        if self.iter % len(self.dataloader) == 0 :
+            print('LBFGS EPOCH: {:}, Loss: {:0.6f}'.format(self.iter//len(self.dataloader), self.ls.item()))
+        torch.nn.utils.clip_grad_norm_(self.net.parameters(), max_norm=1.0)
         return self.ls
 
     def LBFGS_train(self):
@@ -186,15 +190,24 @@ class NavierStokes():
     
     def Adam_train(self, nb_epoch) :
         for i in range(nb_epoch) :
-            self.adam_optimizer.zero_grad()
-            self.loss_function()
-            self.adam_optimizer.step()
-            print(f'Adam iteration {i}, Loss: {self.ls.item():.6f}')
+            averageLoss = 0
+            for x, y, t in self.dataloader :
+                x = x.to(self.device)
+                y = y.to(self.device)
+                t = t.to(self.device)
+                self.adam_optimizer.zero_grad()
+                self.loss_function(x, y, t)
+                self.adam_optimizer.step()
+                self.iter += 1
+                averageLoss += self.ls.item()
+            averageLoss /= len(self.dataloader)
+            print(f'Adam EPOCH {i}, Loss: {self.ls.item():.6f}')
             
     def train(self, nb_epochs_adam, nb_epoch_lbfgs) :
         self.Adam_train(nb_epochs_adam)
-#        for i in range(nb_epoch_lbfgs) :
-#            self.LBFGS_train()
+
+        for i in range(nb_epoch_lbfgs) :
+            self.LBFGS_train()
         
 
 
