@@ -61,13 +61,15 @@ dataloader = DataLoader(dataset, batch_size=5000, shuffle=True)
 
 
 #%% Entrainement
-def trainPINN(dataloader, nbTrainingSteps_adam = 10, nbTrainingSteps_lbfgs = 30) :
-    pinn = PINNs.NavierStokes(dataloader)
+def trainPINN(dataloader, nbTrainingSteps_adam = 30, nbTrainingSteps_lbfgs = 150, fromJsonFile = None) :
+    pinn = PINNs.NavierStokes(dataloader, fromJsonFile=fromJsonFile)
     pinn.train(nbTrainingSteps_adam, nbTrainingSteps_lbfgs)
-    torch.save(pinn.net.state_dict(), 'model' + str(pinn.iter) + '.pt')
+    pinn.savePINN('autobackup' + str(pinn.iter) + '.json')
+    return(pinn.iter)
 
 
-trainPINN(dataloader)
+iteration = trainPINN(dataloader)
+trainPINN(dataloader, fromJsonFile='autobackup' + str(iteration) + '.json')
 
 
 

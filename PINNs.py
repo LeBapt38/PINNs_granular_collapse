@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from math import exp, isnan
+import json
 
 nu = 0.01
 rho = 2500
@@ -37,7 +38,7 @@ def ci(x,y) :
 
 ## Definis la classe pour le PINN
 class NavierStokes():
-    def __init__(self, dataloader):
+    def __init__(self, dataloader, fromJsonFile = None):
 
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.dataloader = dataloader
@@ -47,10 +48,21 @@ class NavierStokes():
         self.null = torch.zeros((self.sizeBatch, 1)).to(self.device)
         # initialize network:
         self.network()
+        if fromJsonFile is not None : 
+            with open(fromJsonFile, 'r') as file :
+                data = json.load(file)
+            self.net.load_state_dict(torch.load(data['net']))
+            self.ls = data['loss']
+            self.iter = data['iter']
+            self.ls_fct_steps = data['lossFctSteps']
+        else :
+            self.ls = 0
+            self.iter = 0
+            self.ls_fct_steps = []
         self.net = self.net.to(self.device)
 
         self.LBFGS_optimizer = torch.optim.LBFGS(self.net.parameters(), 
-                                                 lr=0.001, 
+                                                 lr=0.0001, 
                                                  max_iter=1000, max_eval=None, 
                                                  history_size=50, 
                                                  tolerance_grad=1e-08, 
@@ -60,11 +72,7 @@ class NavierStokes():
         self.adam_optimizer = torch.optim.Adam(self.net.parameters(), lr=0.003)
         self.mse = nn.MSELoss()
 
-        #loss
-        self.ls = 0
-
-        #iteration number
-        self.iter = 0
+        self.ls_average = 0
 
     def network(self):
 
@@ -177,9 +185,15 @@ class NavierStokes():
         self.loss_function(x, y, t)
         
         self.iter += 1
+        self.ls_average += self.ls.item()
         if self.iter % len(self.dataloader) == 0 :
-            print('LBFGS EPOCH: {:}, Loss: {:0.6f}'.format(self.iter//len(self.dataloader), self.ls.item()))
-        torch.nn.utils.clip_grad_norm_(self.net.parameters(), max_norm=1.0)
+            self.ls_average /= len(self.dataloader)
+            if self.ls_average < min(self.ls_fct_steps) :
+                torch.save(self.net.state_dict(), 'autobackup_lbfgs.pt')
+            self.ls_fct_steps.append(self.ls_average)
+            print('LBFGS EPOCH: {:}, Loss: {:0.6f}'.format(self.iter//len(self.dataloader), self.ls_average))
+            self.ls_average = 0
+        torch.nn.utils.clip_grad_norm_(self.net.parameters(), max_norm=0.3)
         return self.ls
 
     def LBFGS_train(self):
@@ -189,8 +203,9 @@ class NavierStokes():
         self.LBFGS_optimizer.step(self.closure)
     
     def Adam_train(self, nb_epoch) :
+        min_ls = 1e12
         for i in range(nb_epoch) :
-            averageLoss = 0
+            self.ls_average = 0
             for x, y, t in self.dataloader :
                 x = x.to(self.device)
                 y = y.to(self.device)
@@ -199,17 +214,31 @@ class NavierStokes():
                 self.loss_function(x, y, t)
                 self.adam_optimizer.step()
                 self.iter += 1
-                averageLoss += self.ls.item()
-            averageLoss /= len(self.dataloader)
-            print(f'Adam EPOCH {i}, Loss: {self.ls.item():.6f}')
+                self.ls_average += self.ls.item()
+            self.ls_average /= len(self.dataloader)
+            if i > nb_epoch // 3  and self.ls_average < min_ls :
+                torch.save(self.net.state_dict(), 'autobackup_adam.pt')
+                min_ls = self.ls_average
+            self.ls_fct_steps.append(self.ls_average)
+            print(f'Adam EPOCH {self.iter//len(self.dataloader)}, Loss: {self.ls_average:.6f}')
             
     def train(self, nb_epochs_adam, nb_epoch_lbfgs) :
         self.Adam_train(nb_epochs_adam)
-
+        self.net.load_state_dict(torch.load('autobackup_adam.pt'))
+        
         for i in range(nb_epoch_lbfgs) :
             self.LBFGS_train()
         
-
+    def savePINN(self, fileName = 'autobackup.json') :
+        torch.save(self.net.state_dict(), 'model' + str(self.iter) + '.pt')
+        dico = {}
+        dico['net'] = 'model' + str(self.iter) + '.pt'
+        dico['loss'] = self.ls.item()
+        dico['lossFctSteps'] = self.ls_fct_steps
+        dico['iter'] = self.iter
+        with open(fileName, 'w') as file :
+            json.dump(dico, file, indent=2)
+        
 
 
 
