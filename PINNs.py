@@ -69,7 +69,7 @@ class NavierStokes():
                                                  tolerance_change=0.01 * np.finfo(float).eps,
                                                  line_search_fn="strong_wolfe")
         
-        self.adam_optimizer = torch.optim.Adam(self.net.parameters(), lr=0.003)
+        self.adam_optimizer = torch.optim.Adam(self.net.parameters(), lr=0.0005)
         self.mse = nn.MSELoss()
 
         self.ls_average = 0
@@ -77,35 +77,34 @@ class NavierStokes():
     def network(self):
 
         self.net = nn.Sequential(
-            nn.Linear(3, 20), nn.Tanh(),
-            nn.Linear(20, 20), nn.Tanh(),
-            nn.Linear(20, 20), nn.Tanh(),
-            nn.Linear(20, 20), nn.Tanh(),
-            nn.Linear(20, 20), nn.Tanh(),
-            nn.Linear(20, 20), nn.Tanh(),
-            nn.Linear(20, 20), nn.Tanh(),
-            nn.Linear(20, 20), nn.Tanh(),
-            nn.Linear(20, 20), nn.Tanh(),
-            nn.Linear(20, 20), nn.Tanh(),
-            nn.Linear(20, 3))
+            nn.Linear(3, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 30), nn.Tanh(),
+            nn.Linear(30, 4))
 
     def function(self, x, y, t):
         
         #Get the results of the NN
         res = self.net(torch.hstack((x, y, t)))
-        psi, p, phi = res[:, 0:1], res[:, 1:2], res[:, 2:3]
+        u, v, p, phi = res[:, 0:1], res[:, 1:2], res[:, 2:3], res[:, 3:4]
         p *= 1e5
-        if isnan(psi[0].item()) :
-            print('psi')
-        elif isnan(p[0].item()) :
+        if isnan(p[0].item()) :
             print('p')
         elif isnan(phi[0].item()) :
             print('phi')
         
         #Modify and get related results
-        u = torch.autograd.grad(psi, y, grad_outputs=torch.ones_like(psi), create_graph=True)[0] #retain_graph=True,
-        v = -1.*torch.autograd.grad(psi, x, grad_outputs=torch.ones_like(psi), create_graph=True)[0]
-
         u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[0]
         u_xx = torch.autograd.grad(u_x, x, grad_outputs=torch.ones_like(u_x), create_graph=True)[0]
         u_xy = torch.autograd.grad(u_x, y, grad_outputs=torch.ones_like(u_x), create_graph=True)[0]
@@ -141,8 +140,8 @@ class NavierStokes():
         sigyx_x = 0.5 * e_x * (u_y + v_x) + 0.5 * e * (u_xy + v_xx)
         
         f = phi_t + u * phi_x + phi * u_x + v * phi_y + phi * v_y
-        g = u_t + u * u_x + v * u_y + p_x - sigxx_x - sigxy_y
-        h = v_t + u * v_x + v * v_y + p_y + rho * phi * G - sigyx_x - sigyy_y
+        g = rho * phi * (u_t + u * u_x + v * u_y) + p_x - sigxx_x - sigxy_y
+        h = rho * phi * (v_t + u * v_x + v * v_y) + p_y + rho * phi * G - sigyx_x - sigyy_y
 
         return u, v, p, phi, f, g, h
     
@@ -157,7 +156,7 @@ class NavierStokes():
         p_loss = 0
         n, k = 0, 0
         for i in range(self.sizeBatch) :
-            if x[i,0] == 0. or x[i,0] == L or y[i,0] == 0. or y[i,0] == h :
+            if x[i,0] < 0.0001 or x[i,0] > L - 0.0001 or y[i,0] < 0.0001 or y[i,0] > h - 0.0001 :
                 u_loss += u_prediction[i,0]**2
                 v_loss += v_prediction[i,0]**2
                 n += 1
@@ -171,7 +170,8 @@ class NavierStokes():
         f_loss = self.mse(f_prediction, self.null)
         g_loss = self.mse(g_prediction, self.null)
         h_loss = self.mse(h_prediction, self.null)
-        self.ls = u_loss + v_loss + 10 * p_loss + 100 * phi_loss + 0.001 * f_loss + 0.001 * g_loss + 0.001 * h_loss
+        self.ls = u_loss + v_loss + 10 * p_loss + 10000 * phi_loss + 0.001 * f_loss + 0.01 * g_loss + 0.01 * h_loss
+        self.ls *= 1e-6
         # derivative with respect to net s weights:
         self.ls.backward()
         
@@ -239,12 +239,56 @@ class NavierStokes():
         with open(fileName, 'w') as file :
             json.dump(dico, file, indent=2)
         
-
-
-
-
-
-
-
-
-
+    def rollout(self, len_x, len_y,  value = "phi") :
+        roll = []
+        for x, y, t in self.dataloader :
+            x = x.to(self.device)
+            y = y.to(self.device)
+            t = t.to(self.device)
+            u_out, v_out, p_out, phi_out, f_out, g_out, h_out = self.function(x, y, t)
+            if value == "phi" :
+                u_plot = phi_out.data.cpu().numpy()
+            elif value == "u" : 
+                u_plot = u_out.data.cpu().numpy()
+            elif value == "v" : 
+                u_plot = v_out.data.cpu().numpy()
+            elif value == "p" : 
+                u_plot = p_out.data.cpu().numpy()
+            elif value == "f" : 
+                u_plot = f_out.data.cpu().numpy()
+            elif value == "g" : 
+                u_plot = g_out.data.cpu().numpy()
+            elif value == "h" : 
+                u_plot = h_out.data.cpu().numpy()
+            elif value == "x" : 
+                u_plot = x.data.cpu().numpy()
+            elif value == "y" : 
+                u_plot = y.data.cpu().numpy()
+            elif value == "t" : 
+                u_plot = t.data.cpu().numpy()
+            else : return("value don't match")
+            u_plot = np.reshape(u_plot, (len_y, len_x))
+            roll.append(u_plot)
+        return roll
+    
+    def valid(self) :
+        self.ls_average = 0
+        for x, y, t in self.dataloader :
+            x = x.to(self.device)
+            y = y.to(self.device)
+            t = t.to(self.device)
+            self.loss_function(x, y, t)
+            self.ls_average += self.ls
+        self.ls_average /= len(self.dataloader)
+        return(self.ls_average)
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            

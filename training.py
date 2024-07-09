@@ -9,6 +9,7 @@ import PINNs
 import torch
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
+import matplotlib.pyplot as plt
 
 N_train = 2000
 nbTrainingSteps = 2
@@ -41,11 +42,9 @@ N = X.shape[0]
 T = t_star.shape[0]
 
 # Rearrange Data
-XX = np.tile(X, (1, T))  # N x T
-YY = np.tile(Y, (1, T))  # N x T
-TT = np.tile(t_star, (1, N)).T  # N x T
-
-
+XX = np.tile(X, (T, 1))  # N x T
+YY = np.tile(Y, (T,1))  # N x T
+TT = np.tile(t_star, (N,1)).T  # N x T
 
 x = XX.flatten()[:, None]  # NT x 1
 y = YY.flatten()[:, None]  # NT x 1
@@ -61,20 +60,21 @@ dataloader = DataLoader(dataset, batch_size=5000, shuffle=True)
 
 
 #%% Entrainement
-def trainPINN(dataloader, nbTrainingSteps_adam = 30, nbTrainingSteps_lbfgs = 150, fromJsonFile = None) :
-    pinn = PINNs.NavierStokes(dataloader, fromJsonFile=fromJsonFile)
-    pinn.train(nbTrainingSteps_adam, nbTrainingSteps_lbfgs)
-    pinn.savePINN('autobackup' + str(pinn.iter) + '.json')
-    return(pinn.iter)
 
 
-iteration = trainPINN(dataloader)
-trainPINN(dataloader, fromJsonFile='autobackup' + str(iteration) + '.json')
+pinn = PINNs.NavierStokes(dataloader)
+pinn.train(1, 150)
+pinn.savePINN('autobackup' + str(pinn.iter) + '.json')
+pinn.train(30, 150)
+pinn.savePINN('autobackup' + str(pinn.iter) + '.json')
 
-
-
-
-
+fig, ax = plt.subplots()
+ax.plot(np.linspace(1,len(pinn.ls_fct_steps), len(pinn.ls_fct_steps)), pinn.ls_fct_steps)
+ax.set_yscale('log')
+ax.set_xlabel('Number of EPOCHs')
+ax.set_ylabel('loss function in log scale')
+fig.suptitle('Evolution of the loss during training')
+fig.save('loss.png')
 
 
 
