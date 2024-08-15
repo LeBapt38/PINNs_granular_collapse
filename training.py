@@ -24,7 +24,7 @@ p0 = 1e5
 L = 1
 h = 0.2
 
-#%%Préparation des données
+#Preparation des donnees
 t_star = np.linspace(0, 10, 100)
 X_star = np.linspace(0,1, 100)
 Y_star = np.linspace(0,0.2, 20)
@@ -59,7 +59,7 @@ dataset = TensorDataset(x, y, t)
 dataloader = DataLoader(dataset, batch_size=5000, shuffle=True)
 
 
-#%% Entrainement
+# Entrainement
 
 
 pinn = PINNs.NavierStokes(dataloader)
